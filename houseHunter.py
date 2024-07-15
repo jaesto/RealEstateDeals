@@ -255,13 +255,28 @@ class Hunter():
         print("Searching KSL Listings...")
         try:
             url = self.kslUrl.format(zip, maxPrice)
+            print(f"Formatted URL: {url}")
             r = session.get(url, headers=self.headers)
             r.raise_for_status()
             soup = BeautifulSoup(r.text, 'html.parser')
-            for listing in soup.find_all('div', class_='Listings_GridItemWrap__Vn0Pm'):
+            print(f"Soup content: {soup.prettify()}")  # This will print the entire parsed HTML content, can be very verbose
+
+            # Adjusting to the correct class based on the provided HTML structure
+            listings = soup.find_all('div', class_='GridItem_GridItem__p_4dE Listings_GridItem__VqALV')
+            listings_a = soup.find_all('a', href=True)
+            listings_h = soup.find_all("a", href=lambda href: href and "/listing/" in href)
+            listings_text = soup.find_all('div', string='GridItem_GridItem__p_4dE Listings_GridItem__VqALV')
+            print(f"Found {len(listings)} listings.")  # Print the number of listings found
+            print(f"Found {len(listings_text)} listings.")
+            print(f"Found {len(listings_a)} listings.") 
+            print(f"Found {len(listings_h)} listings.") 
+            print(listings_h)
+
+            for listing in listings:
                 try:
                     href = listing.find('a', class_='GridItem_GridItemLink__YgRXw')['href']
                     listing_url = f'https://homes.ksl.com{href}'
+                    print(f"Processing listing URL: {listing_url}")  # Debugging line to see the URL being processed
                     self.getKSLListingDetails(listing_url, session)
                 except Exception as e:
                     print(f"Error processing KSL listing: {e}")
@@ -270,7 +285,9 @@ class Hunter():
             print(f"Error fetching KSL listings: {e}")
             print(traceback.format_exc())
 
+
     def getKSLListingDetails(self, url, session):
+        print("Getting KSL Listings Details...")
         try:
             r = session.get(url, headers=self.headers)
             r.raise_for_status()  # Raise an HTTPError for bad responses
