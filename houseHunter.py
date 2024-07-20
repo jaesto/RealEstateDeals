@@ -6,6 +6,7 @@ import datetime
 import time
 import traceback
 import json
+import csv
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -15,7 +16,7 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from neo4j import GraphDatabase
 
-sys.setrecursionlimit(5000)
+sys.setrecursionlimit(10**6)
 
 def load_config():
     # Load database configuration from a JSON file with error handling
@@ -52,7 +53,7 @@ class Hunter():
     listingsFound = None
     utahrealestateUrl = r'http://www.utahrealestate.com/search/public.search?accuracy=5&geocoded={0}&box=%257B%2522north%2522%253A40.71271490000001%252C%2522south%2522%253A40.51886100000001%252C%2522east%2522%253A-111.520936%252C%2522west%2522%253A-111.871398%257D&htype=zip&lat=40.6210656&lng=-111.81713739999998&geolocation=Salt+Lake+City%2C+UT+{0}&type=1&listprice1=&listprice2={1}&proptype=1&state=ut&tot_bed1=&tot_bath1=&tot_sqf1={2}&dim_acres1={3}&yearblt1=&cap_garage1=&style=&o_style=4&opens=&accessibility=&o_accessibility=32&page={4}'
     kslUrl = r'https://homes.ksl.com/search/zip/{0}/apartment-complex;multi-family-home;single-family-home;townhome-condo/maxprice/{1}'
-    chrome_path = r'C:\Users\jds4g\Documents\chrome-win64\chromedriver.exe'
+    # chrome_path = r'C:\Users\jds4g\Documents\chrome-win64\chromedriver.exe'
     
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_3) AppleWebKit/537.31 (KHTML, like Gecko) Chrome/26.0.1410.65 Safari/537.31'}
 
@@ -96,6 +97,9 @@ class Hunter():
                 self.session.close()
                 
             self.checkForOffTheMarkets()
+
+            # Save listings to CSV
+            self.save_listings_to_csv(self.currentListings.values(), 'listings.csv')
         except Exception as e:
             msg = f'Error with search: {e}'
             print(msg)
@@ -107,6 +111,7 @@ class Hunter():
         page = 1
         while True:
             url = baseUrl.format(zip, self.maxPrice, self.minSqFt, self.minLotSize, page)
+            # print(url)
             try:
                 r = session.get(url, headers=self.headers)
                 r.raise_for_status()  # Check for HTTP request errors
@@ -176,13 +181,24 @@ class Hunter():
                     if agent_info:
                         listing.agent_name = agent_info.text.strip()
                         listing.agent_phone = agent_info.find_next('br').next_sibling.strip()
+                        if listing.agent_name:
+                            name_parts = listing.agent_name.split()
+                            listing.agent_first_name = name_parts[0]
+                            listing.agent_last_name = ' '.join(name_parts[1:])
+                        else:
+                            listing.agent_first_name = ""
+                            listing.agent_last_name = ""
                     else:
                         listing.agent_name = ""
                         listing.agent_phone = ""
+                        listing.agent_first_name = ""
+                        listing.agent_last_name = ""
             except (AttributeError, IndexError) as e:
                 print(f"Error extracting agent info: {e}")
                 listing.agent_name = ""
                 listing.agent_phone = ""
+                listing.agent_first_name = ""
+                listing.agent_last_name = ""
 
             # Extract co-agent information
             try:
@@ -221,16 +237,19 @@ class Hunter():
                     listing.address = listTable.h2.i.string.replace('  ', ' ')
                     cityZip = listTable.h2.i.nextSibling.string.split(', ')
                     listing.city = cityZip[1]
+                    listing.state = cityZip[2].split()[0]  # Extract the state
                     listing.zip = cityZip[2].strip()[-5:]
                 else:
                     addressParts = listTable.h2.span.nextSibling.string.strip().split(', ')
                     listing.address = addressParts[0].replace('  ', ' ')
                     listing.city = addressParts[1]
+                    listing.state = addressParts[2].split()[0]  # Extract the state
                     listing.zip = addressParts[2][-5:]
             except (AttributeError, IndexError) as e:
                 print(f"Error extracting address: {e}")
                 listing.address = ""
                 listing.city = ""
+                listing.state = ""
                 listing.zip = ""
 
             try:
@@ -258,6 +277,21 @@ class Hunter():
             listings.append(listing)
 
         return listings
+
+    def save_listings_to_csv(self, listings, filename='listings.csv'):
+        with open(filename, mode='w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                'Property Address', 'Property City', 'Property State', 
+                'Property Zipcode', 'First Name', 'Last Name', 'Email', 'Phone'
+            ])
+            for listing in listings:
+                writer.writerow([
+                    listing.address, listing.city, listing.state, listing.zip, 
+                    listing.agent_first_name, listing.agent_last_name, 
+                    '', # set email as empty string
+                    listing.agent_phone
+                ])
     
     def searchKSLListings(self, zip, maxPrice):
         print("Searching KSL Listings...")
@@ -495,6 +529,8 @@ class Listing():
         self.stats = ''
         self.url = ''
         self.agent_name = ''
+        self.agent_first_name = ''
+        self.agent_last_name = ''
         self.agent_phone = ''
         self.co_agent_name = ''
         self.co_agent_phone = ''
@@ -507,6 +543,8 @@ class Listing():
         self.days_left = 0
         self.description = ''
         self.property_details = {}
+        self.email = ''  # Add this line
+
 
 def main():
     config = load_config()
