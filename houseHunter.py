@@ -6,19 +6,26 @@ import datetime
 import time
 import traceback
 import json
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 from neo4j import GraphDatabase
 
 sys.setrecursionlimit(5000)
 
 def load_config():
-    """Load database configuration from a JSON file with error handling."""
+    # Load database configuration from a JSON file with error handling
     filename = 'config.json'
     try:
         with open(filename, 'r') as file:
             return json.load(file)
     except FileNotFoundError:
         print(f"Error: The configuration file '{filename}' was not found.")
-        return None  # Return None or exit, depending on your error handling strategy
+        return None
     except json.JSONDecodeError:
         print(f"Error: Could not decode the JSON in the file '{filename}'. Check its syntax.")
         return None
@@ -27,7 +34,7 @@ def load_config():
         return None
 
 def load_zip_codes():
-    filename = 'all_zip_codes.json'  # Correct filename for the zip codes file
+    filename = 'all_zip_codes.json'
     try:
         with open(filename, 'r') as file:
             return json.load(file)
@@ -45,6 +52,7 @@ class Hunter():
     listingsFound = None
     utahrealestateUrl = r'http://www.utahrealestate.com/search/public.search?accuracy=5&geocoded={0}&box=%257B%2522north%2522%253A40.71271490000001%252C%2522south%2522%253A40.51886100000001%252C%2522east%2522%253A-111.520936%252C%2522west%2522%253A-111.871398%257D&htype=zip&lat=40.6210656&lng=-111.81713739999998&geolocation=Salt+Lake+City%2C+UT+{0}&type=1&listprice1=&listprice2={1}&proptype=1&state=ut&tot_bed1=&tot_bath1=&tot_sqf1={2}&dim_acres1={3}&yearblt1=&cap_garage1=&style=&o_style=4&opens=&accessibility=&o_accessibility=32&page={4}'
     kslUrl = r'https://homes.ksl.com/search/zip/{0}/apartment-complex;multi-family-home;single-family-home;townhome-condo/maxprice/{1}'
+    chrome_path = r'C:\Users\jds4g\Documents\chrome-win64\chromedriver.exe'
     
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_3) AppleWebKit/537.31 (KHTML, like Gecko) Chrome/26.0.1410.65 Safari/537.31'}
 
@@ -84,7 +92,7 @@ class Hunter():
                 self.session.get(r'http://www.utahrealestate.com/index/public.index')
                 
                 self.searchSite(self.utahrealestateUrl, zip, self.getUtahRealEstateListingsFromHTML, self.session, 'URE')
-                self.searchKSLListings(zip, self.maxPrice, self.session)
+                # self.searchKSLListings(zip, self.maxPrice)
                 self.session.close()
                 
             self.checkForOffTheMarkets()
@@ -251,55 +259,62 @@ class Hunter():
 
         return listings
     
-    def searchKSLListings(self, zip, maxPrice, session):
+    def searchKSLListings(self, zip, maxPrice):
         print("Searching KSL Listings...")
         try:
             url = self.kslUrl.format(zip, maxPrice)
-            print(f"Formatted URL: {url}")
-            r = session.get(url, headers=self.headers)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, 'html.parser')
-            print(f"Soup content: {soup.prettify()}")  # This will print the entire parsed HTML content, can be very verbose
+            print(url)
 
-            # Adjusting to the correct class based on the provided HTML structure
-            listings = soup.find_all('div', class_='GridItem_GridItem__p_4dE Listings_GridItem__VqALV')
-            listings_a = soup.find_all('a', href=True)
-            listings_h = soup.find_all("a", href=lambda href: href and "/listing/" in href)
-            listings_text = soup.find_all('div', string='GridItem_GridItem__p_4dE Listings_GridItem__VqALV')
-            print(f"Found {len(listings)} listings.")  # Print the number of listings found
-            print(f"Found {len(listings_text)} listings.")
-            print(f"Found {len(listings_a)} listings.") 
-            print(f"Found {len(listings_h)} listings.") 
-            print(listings_h)
+            # Set up Selenium with Chrome WebDriver
+            options = Options()
+            options.headless = True  # Run in headless mode
+            options.add_argument('--ignore-certificate-errors')  # Ignore SSL certificate errors
+            options.add_argument('--allow-running-insecure-content')  # Allow insecure content
+            options.add_experimental_option('excludeSwitches', ['enable-logging'])
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+            driver.get(url)
 
+
+            # Wait until the listings are loaded
+            wait = WebDriverWait(driver, 30)
+            listings_container = wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'Listings_ListingsWrapper__LXH2C')))
+
+            # Find listings
+            # listings = listings_container.find_elements(By.CSS_SELECTOR, '.GridItem_GridItem__p_4dE.Listings_GridItem__VqALV.GridItem_HorizontalCard__B9u_8')
+            listings = listings_container.find_elements(By.CSS_SELECTOR, 'a[href^="/listing/"]')
+        
             for listing in listings:
                 try:
-                    href = listing.find('a', class_='GridItem_GridItemLink__YgRXw')['href']
-                    listing_url = f'https://homes.ksl.com{href}'
-                    print(f"Processing listing URL: {listing_url}")  # Debugging line to see the URL being processed
-                    self.getKSLListingDetails(listing_url, session)
+                    href = listing.get_attribute('href')
+                    listing_url = href
+                    self.getKSLListingDetails(listing_url, driver)
                 except Exception as e:
                     print(f"Error processing KSL listing: {e}")
                     print(traceback.format_exc())
         except Exception as e:
             print(f"Error fetching KSL listings: {e}")
             print(traceback.format_exc())
+            # Save the current page source for debugging
+            with open("error_page.html", "w") as f:
+                f.write(driver.page_source)
+        finally:
+            driver.quit()
 
 
-    def getKSLListingDetails(self, url, session):
-        print("Getting KSL Listings Details...")
+    def getKSLListingDetails(self, url, driver):
+        print("Getting KSL Listing Details...")
         try:
-            r = session.get(url, headers=self.headers)
-            r.raise_for_status()  # Raise an HTTPError for bad responses
-        except requests.RequestException as e:
-            print(f"Error fetching KSL listing details from {url}: {e}")
-            print(traceback.format_exc())
-            return
+            driver.get(url)
+            wait = WebDriverWait(driver, 30)
+            # Wait until a certain element is loaded to ensure the page is fully loaded
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'ContactInfo')))  # Adjust as needed
 
-        try:
-            soup = BeautifulSoup(r.text, 'html.parser')
+            # Parse the page source with BeautifulSoup
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
             listing = Listing()
-            
+
+            # Your existing code to parse listing details using soup
             try:
                 listing.mls = soup.find('span', class_='PageStats-value').text.strip()
             except AttributeError:
