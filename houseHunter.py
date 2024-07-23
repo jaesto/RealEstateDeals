@@ -1,5 +1,4 @@
 import requests
-import pickle
 from bs4 import BeautifulSoup 
 import os, sys
 import datetime
@@ -48,7 +47,7 @@ def load_zip_codes():
 
 class Hunter():
     sleepTime = 10 * 60
-    pickleFileName = 'SavedListings.pkl'
+    jsonFileName = 'SavedListings.json'
     currentListings = None
     listingsFound = None
     utahrealestateUrl = r'http://www.utahrealestate.com/search/public.search?accuracy=5&geocoded={0}&box=%257B%2522north%2522%253A40.71271490000001%252C%2522south%2522%253A40.51886100000001%252C%2522east%2522%253A-111.520936%252C%2522west%2522%253A-111.871398%257D&htype=zip&lat=40.6210656&lng=-111.81713739999998&geolocation=Salt+Lake+City%2C+UT+{0}&type=1&listprice1=&listprice2={1}&proptype=1&state=ut&tot_bed1=&tot_bath1=&tot_sqf1={2}&dim_acres1={3}&yearblt1=&cap_garage1=&style=&o_style=4&opens=&accessibility=&o_accessibility=32&page={4}'
@@ -78,34 +77,60 @@ class Hunter():
                 print(f'Error with search function: {e}')
                 print(self.getTraceBack())
             finally:
+                print(f'Completed search #{totalSearches}.')
                 print(f'sleeping for {self.sleepTime} seconds...')
                 time.sleep(self.sleepTime)
 
     def search(self):
-        self.currentListings = self.getSavedListings()
-        self.listingsFound = []
-        
-        try:
-            for zip in self.zipCodes:
-                print(f'Searching ZIP: {zip}')
+            self.currentListings = self.getSavedListings()
+            self.listingsFound = []
+            
+            try:
+                for zip in self.zipCodes:
+                    # print(f'Searching ZIP: {zip}')
+                    
+                    self.session = requests.Session()
+                    self.session.get(r'http://www.utahrealestate.com/index/public.index')
+                    
+                    self.searchSite(self.utahrealestateUrl, zip, self.getUtahRealEstateListingsFromHTML, self.session, 'URE')
+                    # self.searchKSLListings(zip, self.maxPrice)
+                    self.session.close()
                 
-                self.session = requests.Session()
-                self.session.get(r'http://www.utahrealestate.com/index/public.index')
-                
-                self.searchSite(self.utahrealestateUrl, zip, self.getUtahRealEstateListingsFromHTML, self.session, 'URE')
-                # self.searchKSLListings(zip, self.maxPrice)
-                self.session.close()
-                
-            self.checkForOffTheMarkets()
+                self.checkForOffTheMarkets()
 
-            # Save listings to CSV
-            self.save_listings_to_csv(self.currentListings.values(), 'listings.csv')
-        except Exception as e:
-            msg = f'Error with search: {e}'
-            print(msg)
-        finally:
-            with open(self.pickleFileName, 'wb') as file:
-                pickle.dump(self.currentListings, file)
+                # Save listings to CSV
+                try:
+                    self.save_listings_to_csv(self.currentListings.values(), 'listings.csv')
+                except Exception as e:
+                    print(f"Error saving listings to CSV: {e}")
+                    print(traceback.format_exc())
+            except Exception as e:
+                msg = f'Error with search: {e}'
+                print(msg)
+                print(traceback.format_exc())
+            finally:
+                print("Entering the 'finally' block.")
+                print(f"self.currentListings has {len(self.currentListings)} items.")
+                try:
+                    print(f"Opening file {self.jsonFileName} for writing...")
+                    with open(self.jsonFileName, 'w') as file:
+                        print("File opened successfully.")
+                        print("Attempting to write JSON file...")
+                        
+                        try:
+                            json.dump(self.currentListings, file, default=self.listing_to_dict, indent=4)
+                            print("JSON file written successfully.")
+                        except Exception as e:
+                            print(f"JSON error: {e}")
+                            print(traceback.format_exc())
+                            with open("json_error_debug.log", "w") as debug_file:
+                                debug_file.write(f"JSON error: {e}\n")
+                                for listing in self.currentListings.values():
+                                    debug_file.write(f"{listing}\n")
+                                print("Error details written to json_error_debug.log.")
+                except Exception as e:
+                    print(f"Error writing JSON file '{self.jsonFileName}': {e}")
+                    print(traceback.format_exc())
 
     def searchSite(self, baseUrl, zip, getListings, session, listing_type):
         page = 1
@@ -134,21 +159,31 @@ class Hunter():
                 else:
                     self.sendToNeo4j(l, 'new_listing', None, listing_type)
                     self.currentListings[l.mls] = l
-                    print(f'New property found: {l.mls}')
+                    # print(f'New property found: {l.mls}')
             page += 1
 
     def getSavedListings(self):
-        if not os.path.exists(self.pickleFileName):
+        if not os.path.exists(self.jsonFileName):
+            print("JSON file does not exist. Creating a new one.")
             return {}
         try:
-            with open(self.pickleFileName, 'rb') as file:
-                return pickle.load(file)
-        except (EOFError, pickle.UnpicklingError):
-            print("Pickle file is empty or corrupted. Creating a new one.")
+            with open(self.jsonFileName, 'r') as file:
+                data = json.load(file)
+                return {mls: Listing(**details) for mls, details in data.items()}
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            print(f"JSON file is empty or corrupted: {e}. Creating a new one.")
+            return {}
+        except Exception as e:
+            print(f"Unexpected error while loading JSON file: {e}")
             return {}
 
+    def listing_to_dict(self, obj):
+        if isinstance(obj, Listing):
+            return obj.__dict__
+        return obj
+
     def getUtahRealEstateListingsFromHTML(self, htmlText):
-        print("Searching URE Listings...")
+        # print("Searching URE Listings...")
         soup = BeautifulSoup(htmlText, 'html.parser')
         listings = []
         for listTable in soup.findAll('table', {'class': 'public-detail-quickview'}):
@@ -279,19 +314,23 @@ class Hunter():
         return listings
 
     def save_listings_to_csv(self, listings, filename='listings.csv'):
-        with open(filename, mode='w', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                'Property Address', 'Property City', 'Property State', 
-                'Property Zipcode', 'First Name', 'Last Name', 'Email', 'Phone'
-            ])
-            for listing in listings:
+        try:
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
                 writer.writerow([
-                    listing.address, listing.city, listing.state, listing.zip, 
-                    listing.agent_first_name, listing.agent_last_name, 
-                    '', # set email as empty string
-                    listing.agent_phone
+                    'Property Address', 'Property City', 'Property State', 
+                    'Property Zipcode', 'First Name', 'Last Name', 'Email', 'Phone'
                 ])
+                for listing in listings:
+                    writer.writerow([
+                        listing.address, listing.city, listing.state, listing.zip, 
+                        listing.agent_first_name, listing.agent_last_name, 
+                        '',  # set email as empty string
+                        listing.agent_phone
+                    ])
+            print(f"CSV file '{filename}' written successfully.")
+        except Exception as e:
+            print(f"Error writing CSV file '{filename}': {e}")
     
     def searchKSLListings(self, zip, maxPrice):
         print("Searching KSL Listings...")
@@ -480,6 +519,38 @@ class Hunter():
                             expiration_date=listing.expiration_date, page_views=listing.page_views,
                             favorited=listing.favorited, days_online=listing.days_online, days_left=listing.days_left,
                             description=listing.description, property_details=json.dumps(listing.property_details))
+
+                # Create or update the agent node
+                agent_query = """
+                MERGE (a:Agent {name: $agent_name, phone: $agent_phone})
+                """
+                session.run(agent_query, agent_name=listing.agent_name, agent_phone=listing.agent_phone)
+
+                # Create or update the broker node
+                broker_query = """
+                MERGE (b:Broker {name: $broker_name, phone: $broker_phone})
+                """
+                session.run(broker_query, broker_name=listing.broker_name, broker_phone=listing.broker_phone)
+
+                # Create the relationships between the listing and the agent, and between the listing and the broker
+                agent_listing_relationship_query = f"""
+                MATCH (a:Agent {{name: $agent_name, phone: $agent_phone}}), (l:{listing_type} {{mls: $mls}})
+                MERGE (a)-[:AGENT_OF]->(l)
+                """
+                session.run(agent_listing_relationship_query, agent_name=listing.agent_name, agent_phone=listing.agent_phone, mls=listing.mls)
+
+                broker_listing_relationship_query = f"""
+                MATCH (b:Broker {{name: $broker_name, phone: $broker_phone}}), (l:{listing_type} {{mls: $mls}})
+                MERGE (b)-[:BROKERED_BY]->(l)
+                """
+                session.run(broker_listing_relationship_query, broker_name=listing.broker_name, broker_phone=listing.broker_phone, mls=listing.mls)
+
+                # Create the relationship between the agent and the broker
+                agent_broker_relationship_query = """
+                MATCH (a:Agent {name: $agent_name, phone: $agent_phone}), (b:Broker {name: $broker_name, phone: $broker_phone})
+                MERGE (a)-[:WORKS_FOR]->(b)
+                """
+                session.run(agent_broker_relationship_query, agent_name=listing.agent_name, agent_phone=listing.agent_phone, broker_name=listing.broker_name, broker_phone=listing.broker_phone)
         except Exception as e:
             print(f"Error sending data to Neo4j: {e}")
 
@@ -488,6 +559,7 @@ class Hunter():
         for mls in list(self.currentListings.keys()):
             if mls not in self.listingsFound:
                 listing = self.currentListings[mls]
+                print(f"Listing {mls} not found in current search. Marking as off the market.")
                 try:
                     timeOnMarket = (datetime.datetime.now() - datetime.datetime.fromtimestamp(listing.foundDate)).days
                 except Exception as e:
@@ -495,9 +567,12 @@ class Hunter():
                     timeOnMarket = '???'
                 try:
                     self.sendToNeo4j(listing, 'off_market', f'Listing Off Market in {timeOnMarket} days!!!', 'URE')
+                    print(f"Listing {mls} marked as off the market in Neo4j.")
                 except Exception as e:
                     print(f"Error sending off-market listing to Neo4j: {e}")
                 del self.currentListings[mls]
+                print(f"Listing {mls} removed from current listings.")
+        print('Completed checking for off the markets.')
 
     def getTraceBack(self):
         try:
@@ -545,6 +620,10 @@ class Listing():
         self.property_details = {}
         self.email = ''  # Add this line
 
+    def __repr__(self):
+        return (f"Listing(mls={self.mls}, price={self.price}, address={self.address}, city={self.city}, "
+                f"state={self.state}, zip={self.zip}, agent_name={self.agent_name}, agent_phone={self.agent_phone}, "
+                f"broker_name={self.broker_name}, broker_phone={self.broker_phone})")
 
 def main():
     config = load_config()
@@ -563,8 +642,8 @@ def main():
         neo4j_password=config['neo4j_password'],
         zips=zipCodes,
         maxPrice=500000,
-        minSqFt=1000,
-        minLotSize=0.1
+        minSqFt=750,
+        minLotSize=0.01
     )
 
     try:
