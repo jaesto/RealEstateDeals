@@ -6,6 +6,8 @@ import time
 import traceback
 import json
 import csv
+import pandas as pd
+import re
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -45,8 +47,28 @@ def load_zip_codes():
         print(f"Error: The file '{filename}' could not be decoded.")
         return []
 
+def normalize_phone_number(phone):
+    # Remove all non-digit characters
+    digits = re.sub(r'\D', '', phone)
+    # Format the phone number as +1XXXXXXXXXX (US phone number format)
+    if len(digits) == 10:
+        return f"+1{digits}"
+    elif len(digits) == 11 and digits.startswith('1'):
+        return f"+{digits}"
+    return phone  # Return as is if it doesn't match expected formats
+
+def load_astro_agents(filename):
+    try:
+        astro_agents = pd.read_csv(filename)
+        astro_agents['Phone'] = astro_agents['Phone'].apply(normalize_phone_number)
+        return astro_agents[['First Name', 'Last Name', 'Phone']]
+    except Exception as e:
+        print(f"Error loading astro agents from {filename}: {e}")
+        return pd.DataFrame()
+
+
 class Hunter():
-    sleepTime = 10 * 60
+    sleepTime = 30 * 60
     jsonFileName = 'SavedListings.json'
     currentListings = None
     listingsFound = None
@@ -73,6 +95,7 @@ class Hunter():
             try:
                 print(f'search #{totalSearches}')
                 self.search()
+                self.update_agents()  # Call update_agents after each search
             except Exception as e:
                 print(f'Error with search function: {e}')
                 print(self.getTraceBack())
@@ -162,6 +185,32 @@ class Hunter():
                     # print(f'New property found: {l.mls}')
             page += 1
 
+    def get_scrapped_agents(self):
+        scrapped_agents = pd.DataFrame([{
+            'First Name': listing.agent_first_name,
+            'Last Name': listing.agent_last_name,
+            'Phone': normalize_phone_number(listing.agent_phone),
+            'City': listing.city
+        } for listing in self.currentListings.values()])
+        return scrapped_agents
+
+    def update_agents(self):
+        # Load astro agents
+        astro_agents = load_astro_agents('contacts.csv')
+        if astro_agents.empty:
+            print("No astro agents loaded. Exiting.")
+            return
+
+        # Get scrapped agents
+        scrapped_agents = self.get_scrapped_agents()
+
+        # Get unique Utah agents
+        unique_utah_agents = get_unique_utah_agents(astro_agents, scrapped_agents)
+
+        # Save unique Utah agents to a CSV file
+        unique_utah_agents.to_csv('unique_utah_agents.csv', index=False)
+        print("Unique Utah agents saved to 'unique_utah_agents.csv'.")
+
     def getSavedListings(self):
         if not os.path.exists(self.jsonFileName):
             print("JSON file does not exist. Creating a new one.")
@@ -169,7 +218,7 @@ class Hunter():
         try:
             with open(self.jsonFileName, 'r') as file:
                 data = json.load(file)
-                return {mls: Listing(**details) for mls, details in data.items()}
+                return {mls: Listing.from_dict(details) for mls, details in data.items()}
         except (json.JSONDecodeError, FileNotFoundError) as e:
             print(f"JSON file is empty or corrupted: {e}. Creating a new one.")
             return {}
@@ -183,7 +232,6 @@ class Hunter():
         return obj
 
     def getUtahRealEstateListingsFromHTML(self, htmlText):
-        # print("Searching URE Listings...")
         soup = BeautifulSoup(htmlText, 'html.parser')
         listings = []
         for listTable in soup.findAll('table', {'class': 'public-detail-quickview'}):
@@ -208,7 +256,6 @@ class Hunter():
                 print(f"Error extracting photo URL: {e}")
                 listing.photoUrl = ''
 
-            # Extract agent information
             try:
                 agent_info = listTable.find('b', string='Agent:')
                 if agent_info:
@@ -235,7 +282,6 @@ class Hunter():
                 listing.agent_first_name = ""
                 listing.agent_last_name = ""
 
-            # Extract co-agent information
             try:
                 co_agent_info = listTable.find('b', string='Co-Agent:')
                 if co_agent_info:
@@ -251,7 +297,6 @@ class Hunter():
                 listing.co_agent_name = ""
                 listing.co_agent_phone = ""
 
-            # Extract broker information
             try:
                 broker_info = listTable.find('b', string='Office:')
                 if broker_info:
@@ -272,16 +317,16 @@ class Hunter():
                     listing.address = listTable.h2.i.string.replace('  ', ' ')
                     cityZip = listTable.h2.i.nextSibling.string.split(', ')
                     listing.city = cityZip[1]
-                    listing.state = cityZip[2].split()[0]  # Extract the state
+                    listing.state = cityZip[2].split()[0]
                     listing.zip = cityZip[2].strip()[-5:]
                 else:
                     addressParts = listTable.h2.span.nextSibling.string.strip().split(', ')
                     listing.address = addressParts[0].replace('  ', ' ')
                     listing.city = addressParts[1]
-                    listing.state = addressParts[2].split()[0]  # Extract the state
+                    listing.state = addressParts[2].split()[0]
                     listing.zip = addressParts[2][-5:]
             except (AttributeError, IndexError) as e:
-                print(f"Error extracting address: {e}")
+                print(f"Error extracting address for listing with MLS {listing.mls}: {e}")
                 listing.address = ""
                 listing.city = ""
                 listing.state = ""
@@ -290,7 +335,7 @@ class Hunter():
             try:
                 listing.sqft = int(listTable.find('p', {'class': 'public-detail-overview'}).string.strip()[-12:-8])
             except (AttributeError, IndexError, ValueError) as e:
-                print(f"Error extracting sqft: {e}")
+                print(f"Error extracting sqft for listing with MLS {listing.mls}: {e}")
                 listing.sqft = 0
 
             listing.ppsqft = listing.price / listing.sqft if listing.sqft else 0
@@ -298,13 +343,13 @@ class Hunter():
             try:
                 listing.acres = float(listTable.find('p', {'class': 'public-detail-overview-b'}).contents[-1].strip())
             except (AttributeError, IndexError, ValueError) as e:
-                print(f"Error extracting acres: {e}")
+                print(f"Error extracting acres for listing with MLS {listing.mls}: {e}")
                 listing.acres = 0.0
 
             try:
                 listing.stats = listTable.find('p', {'class': 'public-detail-overview'}).string.strip()
             except AttributeError as e:
-                print(f"Error extracting stats: {e}")
+                print(f"Error extracting stats for listing with MLS {listing.mls}: {e}")
                 listing.stats = ''
 
             listing.url = r'http://www.utahrealestate.com/report/public.single.report/report/detailed/listno/{0}/scroll_to/{0}'.format(listing.mls)
@@ -624,6 +669,26 @@ class Listing():
         return (f"Listing(mls={self.mls}, price={self.price}, address={self.address}, city={self.city}, "
                 f"state={self.state}, zip={self.zip}, agent_name={self.agent_name}, agent_phone={self.agent_phone}, "
                 f"broker_name={self.broker_name}, broker_phone={self.broker_phone})")
+    
+    @classmethod
+    def from_dict(cls, data):
+        listing = cls()
+        listing.__dict__.update(data)
+        return listing
+
+
+def load_astro_agents(filename):
+    try:
+        astro_agents = pd.read_csv(filename)
+        return astro_agents[['First Name', 'Last Name', 'Phone']]
+    except Exception as e:
+        print(f"Error loading astro agents from {filename}: {e}")
+        return pd.DataFrame()
+
+def get_unique_utah_agents(astro_agents, scrapped_agents):
+    unique_agents = scrapped_agents.merge(astro_agents, on=['First Name', 'Last Name', 'Phone'], how='left', indicator=True)
+    unique_agents = unique_agents[unique_agents['_merge'] == 'left_only'].drop(columns=['_merge'])
+    return unique_agents
 
 def main():
     config = load_config()
@@ -641,7 +706,7 @@ def main():
         neo4j_user=config['neo4j_user'],
         neo4j_password=config['neo4j_password'],
         zips=zipCodes,
-        maxPrice=500000,
+        maxPrice=750000,
         minSqFt=750,
         minLotSize=0.01
     )
