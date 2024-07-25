@@ -695,18 +695,14 @@ def load_astro_agents(filename):
         return pd.DataFrame()
 
 def get_unique_utah_agents(astro_agents, scrapped_agents):
-    # Merge on first and last name to find common agents
-    common_agents = pd.merge(scrapped_agents, astro_agents, on=['First Name', 'Last Name'], how='inner')
-    # Filter out common agents from scrapped agents
-    unique_agents = scrapped_agents[~scrapped_agents.apply(lambda x: (x['First Name'], x['Last Name']) in 
-                                                           list(zip(common_agents['First Name'], common_agents['Last Name'])), axis=1)]
-    return unique_agents
-    # This commented out code works, checking to see if the other code give me the same results. 
-    # scrapped_agents = scrapped_agents.astype({"First Name": str, "Last Name": str})
-    # astro_agents = astro_agents.astype({"First Name": str, "Last Name": str})
-    # unique_agents = scrapped_agents.merge(astro_agents[['First Name', 'Last Name']], on=['First Name', 'Last Name'], how='left', indicator=True)
-    # unique_agents = unique_agents[unique_agents['_merge'] == 'left_only'].drop(columns=['_merge'])
-    # return unique_agents
+    # First, merge to find unique agents
+    merged_agents = scrapped_agents.merge(astro_agents, on=['First Name', 'Last Name'], how='left', indicator=True)
+    unique_agents = merged_agents[merged_agents['_merge'] == 'left_only'].drop(columns=['_merge', 'Phone_y']).rename(columns={'Phone_x': 'Phone'})
+
+    # Group by first name, last name, and phone number, merging cities into lists
+    grouped_agents = unique_agents.groupby(['First Name', 'Last Name', 'Phone'], as_index=False).agg({'City': lambda x: ', '.join(set(x))})
+
+    return grouped_agents
 
 def main():
     config = load_config()
