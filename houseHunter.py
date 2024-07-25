@@ -48,15 +48,16 @@ def load_zip_codes():
         return []
 
 def normalize_phone_number(phone):
+    if pd.isna(phone):
+        return ''
     # Remove all non-digit characters
-    digits = re.sub(r'\D', '', phone)
+    digits = re.sub(r'\D', '', str(phone))
     # Format the phone number as +1XXXXXXXXXX (US phone number format)
     if len(digits) == 10:
         return f"+1{digits}"
     elif len(digits) == 11 and digits.startswith('1'):
         return f"+{digits}"
-    return phone  # Return as is if it doesn't match expected formats
-
+    return str(phone)  # Return as is if it doesn't match expected formats
 def load_astro_agents(filename):
     try:
         astro_agents = pd.read_csv(filename)
@@ -204,12 +205,17 @@ class Hunter():
         # Get scrapped agents
         scrapped_agents = self.get_scrapped_agents()
 
+        # Ensure the columns are strings
+        scrapped_agents['First Name'] = scrapped_agents['First Name'].astype(str)
+        scrapped_agents['Last Name'] = scrapped_agents['Last Name'].astype(str)
+
         # Get unique Utah agents
         unique_utah_agents = get_unique_utah_agents(astro_agents, scrapped_agents)
 
         # Save unique Utah agents to a CSV file
         unique_utah_agents.to_csv('unique_utah_agents.csv', index=False)
         print("Unique Utah agents saved to 'unique_utah_agents.csv'.")
+
 
     def getSavedListings(self):
         if not os.path.exists(self.jsonFileName):
@@ -680,15 +686,27 @@ class Listing():
 def load_astro_agents(filename):
     try:
         astro_agents = pd.read_csv(filename)
+        astro_agents['Phone'] = astro_agents['Phone'].apply(normalize_phone_number)
+        astro_agents['First Name'] = astro_agents['First Name'].astype(str)
+        astro_agents['Last Name'] = astro_agents['Last Name'].astype(str)
         return astro_agents[['First Name', 'Last Name', 'Phone']]
     except Exception as e:
         print(f"Error loading astro agents from {filename}: {e}")
         return pd.DataFrame()
 
 def get_unique_utah_agents(astro_agents, scrapped_agents):
-    unique_agents = scrapped_agents.merge(astro_agents, on=['First Name', 'Last Name', 'Phone'], how='left', indicator=True)
-    unique_agents = unique_agents[unique_agents['_merge'] == 'left_only'].drop(columns=['_merge'])
+    # Merge on first and last name to find common agents
+    common_agents = pd.merge(scrapped_agents, astro_agents, on=['First Name', 'Last Name'], how='inner')
+    # Filter out common agents from scrapped agents
+    unique_agents = scrapped_agents[~scrapped_agents.apply(lambda x: (x['First Name'], x['Last Name']) in 
+                                                           list(zip(common_agents['First Name'], common_agents['Last Name'])), axis=1)]
     return unique_agents
+    # This commented out code works, checking to see if the other code give me the same results. 
+    # scrapped_agents = scrapped_agents.astype({"First Name": str, "Last Name": str})
+    # astro_agents = astro_agents.astype({"First Name": str, "Last Name": str})
+    # unique_agents = scrapped_agents.merge(astro_agents[['First Name', 'Last Name']], on=['First Name', 'Last Name'], how='left', indicator=True)
+    # unique_agents = unique_agents[unique_agents['_merge'] == 'left_only'].drop(columns=['_merge'])
+    # return unique_agents
 
 def main():
     config = load_config()
