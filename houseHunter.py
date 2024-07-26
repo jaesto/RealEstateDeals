@@ -58,10 +58,22 @@ def normalize_phone_number(phone):
     elif len(digits) == 11 and digits.startswith('1'):
         return f"+{digits}"
     return str(phone)  # Return as is if it doesn't match expected formats
+
+# def load_astro_agents(filename):
+#     try:
+#         astro_agents = pd.read_csv(filename)
+#         astro_agents['Phone'] = astro_agents['Phone'].apply(normalize_phone_number)
+#         return astro_agents[['First Name', 'Last Name', 'Phone']]
+#     except Exception as e:
+#         print(f"Error loading astro agents from {filename}: {e}")
+#         return pd.DataFrame()
+
 def load_astro_agents(filename):
     try:
         astro_agents = pd.read_csv(filename)
         astro_agents['Phone'] = astro_agents['Phone'].apply(normalize_phone_number)
+        astro_agents['First Name'] = astro_agents['First Name'].astype(str)
+        astro_agents['Last Name'] = astro_agents['Last Name'].astype(str)
         return astro_agents[['First Name', 'Last Name', 'Phone']]
     except Exception as e:
         print(f"Error loading astro agents from {filename}: {e}")
@@ -208,6 +220,10 @@ class Hunter():
         # Ensure the columns are strings
         scrapped_agents['First Name'] = scrapped_agents['First Name'].astype(str)
         scrapped_agents['Last Name'] = scrapped_agents['Last Name'].astype(str)
+        scrapped_agents['Phone'] = scrapped_agents['Phone'].astype(str)
+
+        # Filter out agents without a phone number
+        scrapped_agents = scrapped_agents[scrapped_agents['Phone'].str.strip() != '']
 
         # Get unique Utah agents
         unique_utah_agents = get_unique_utah_agents(astro_agents, scrapped_agents)
@@ -215,6 +231,9 @@ class Hunter():
         # Save unique Utah agents to a CSV file
         unique_utah_agents.to_csv('unique_utah_agents.csv', index=False)
         print("Unique Utah agents saved to 'unique_utah_agents.csv'.")
+
+        # Update city tags and normalize names
+        update_city_tags()
 
 
     def getSavedListings(self):
@@ -669,7 +688,7 @@ class Listing():
         self.days_left = 0
         self.description = ''
         self.property_details = {}
-        self.email = ''  # Add this line
+        self.email = '' 
 
     def __repr__(self):
         return (f"Listing(mls={self.mls}, price={self.price}, address={self.address}, city={self.city}, "
@@ -682,18 +701,6 @@ class Listing():
         listing.__dict__.update(data)
         return listing
 
-
-def load_astro_agents(filename):
-    try:
-        astro_agents = pd.read_csv(filename)
-        astro_agents['Phone'] = astro_agents['Phone'].apply(normalize_phone_number)
-        astro_agents['First Name'] = astro_agents['First Name'].astype(str)
-        astro_agents['Last Name'] = astro_agents['Last Name'].astype(str)
-        return astro_agents[['First Name', 'Last Name', 'Phone']]
-    except Exception as e:
-        print(f"Error loading astro agents from {filename}: {e}")
-        return pd.DataFrame()
-
 def get_unique_utah_agents(astro_agents, scrapped_agents):
     # First, merge to find unique agents
     merged_agents = scrapped_agents.merge(astro_agents, on=['First Name', 'Last Name'], how='left', indicator=True)
@@ -703,6 +710,38 @@ def get_unique_utah_agents(astro_agents, scrapped_agents):
     grouped_agents = unique_agents.groupby(['First Name', 'Last Name', 'Phone'], as_index=False).agg({'City': lambda x: ', '.join(set(x))})
 
     return grouped_agents
+
+def capitalize_names(name):
+    return ' '.join(word.capitalize() if word else '' for word in name.split())
+
+def update_city_tags():
+    try:
+        # Load the unique Utah agents CSV
+        unique_agents = pd.read_csv('unique_utah_agents.csv')
+
+        # Capitalize names
+        unique_agents['First Name'] = unique_agents['First Name'].apply(capitalize_names)
+        unique_agents['Last Name'] = unique_agents['Last Name'].apply(capitalize_names)
+
+        # Ensure the 'City' column is treated as a string
+        unique_agents['City'] = unique_agents['City'].astype(str)
+
+        # Update city tags
+        unique_agents['City'] = unique_agents['City'].apply(lambda cities: ', '.join([f"{city.strip()} Utah Market" for city in cities.split(',') if isinstance(city, str)]))
+
+        # Add "realtor" tag
+        unique_agents['Tags'] = unique_agents['City'] + ', realtor'
+
+        # Drop the 'City' column
+        unique_agents = unique_agents.drop(columns=['City'])
+
+        # Save the updated CSV without quotes and escape characters
+        unique_agents.to_csv('unique_utah_agents_updated.csv', index=False, quoting=csv.QUOTE_MINIMAL)
+        print("Updated unique Utah agents saved to 'unique_utah_agents_updated.csv'.")
+    except Exception as e:
+        print(f"Error updating city tags: {e}")
+        print(traceback.format_exc())
+
 
 def main():
     config = load_config()
@@ -720,8 +759,8 @@ def main():
         neo4j_user=config['neo4j_user'],
         neo4j_password=config['neo4j_password'],
         zips=zipCodes,
-        maxPrice=750000,
-        minSqFt=750,
+        maxPrice=1500000,
+        minSqFt=1,
         minLotSize=0.01
     )
 
