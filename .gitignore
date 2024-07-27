@@ -43,3 +43,11 @@ config.json
 
 # Saving for Dexterity
 houseHunter.py
+
+# Not for Public Use
+listings.csv
+SavedListings.csv
+SavedListings.json
+all_zip_codes.json
+unique_utah_agents.csv
+unique_utah_agents_undated.csv
