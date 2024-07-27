@@ -40,3 +40,6 @@ nosetests.xml
 
 # Config Details
 config.json
+
+# Saving for Dexterity
+houseHunter.py
