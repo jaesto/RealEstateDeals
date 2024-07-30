@@ -1,17 +1,16 @@
 import requests
 from bs4 import BeautifulSoup
-from neo4j import GraphDatabase
+from listing import Listing
+from data_loader import normalize_phone_number, load_astro_agents
+from data_processing import get_unique_utah_agents, update_city_tags
+from database_ops import DatabaseOps
 import json
 import time
 import datetime
 import traceback
 import csv
 import os, sys
-from data_loader import normalize_phone_number
-from data_loader import load_astro_agents
-from data_processing import get_unique_utah_agents, update_city_tags
 import pandas as pd
-from listing import Listing  
 
 class Hunter():
     sleepTime = 30 * 60
@@ -24,14 +23,14 @@ class Hunter():
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_3) AppleWebKit/537.31 (KHTML, like Gecko) Chrome/26.0.1410.65 Safari/537.31'}
 
     def __init__(self, neo4j_uri, neo4j_user, neo4j_password, zips, maxPrice, minSqFt, minLotSize):
-        self.driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+        self.db_ops = DatabaseOps(neo4j_uri, neo4j_user, neo4j_password)
         self.zipCodes = zips
         self.maxPrice = maxPrice
         self.minSqFt = minSqFt
         self.minLotSize = minLotSize
 
     def close(self):
-        self.driver.close()
+        self.db_ops.close()
 
     def startSearch(self):
         totalSearches = 0
@@ -50,52 +49,52 @@ class Hunter():
                 time.sleep(self.sleepTime)
 
     def search(self):
-            self.currentListings = self.get_saved_listings()
-            self.listingsFound = []
-            
-            try:
-                for zip in self.zipCodes:
-                    self.session = requests.Session()
-                    self.session.get(r'http://www.utahrealestate.com/index/public.index')
-                    
-                    self.search_site(self.utahrealestateUrl, zip, self.get_utah_real_estate_listings_from_html, self.session, 'URE')
-                    self.session.close()
+        self.currentListings = self.get_saved_listings()
+        self.listingsFound = []
+        
+        try:
+            for zip in self.zipCodes:
+                self.session = requests.Session()
+                self.session.get(r'http://www.utahrealestate.com/index/public.index')
                 
-                self.check_for_off_the_markets()
+                self.search_site(self.utahrealestateUrl, zip, self.get_utah_real_estate_listings_from_html, self.session, 'URE')
+                self.session.close()
+            
+            self.check_for_off_the_markets()
 
-                # Save listings to CSV
-                try:
-                    self.save_listings_to_csv(self.currentListings.values(), 'listings.csv')
-                except Exception as e:
-                    print(f"Error saving listings to CSV: {e}")
-                    print(traceback.format_exc())
+            # Save listings to CSV
+            try:
+                self.save_listings_to_csv(self.currentListings.values(), 'listings.csv')
             except Exception as e:
-                msg = f'Error with search: {e}'
-                print(msg)
+                print(f"Error saving listings to CSV: {e}")
                 print(traceback.format_exc())
-            finally:
-                print("Entering the 'finally' block.")
-                print(f"self.currentListings has {len(self.currentListings)} items.")
-                try:
-                    print(f"Opening file {self.jsonFileName} for writing...")
-                    with open(self.jsonFileName, 'w') as file:
-                        print("File opened successfully.")
-                        print("Attempting to write JSON file...")
-                        
-                        try:
-                            json.dump(self.currentListings, file, default=self.listing_to_dict, indent=4)
-                            print("JSON file written successfully.")
-                        except Exception as e:
-                            print(f"JSON error: {e}")
-                            print(traceback.format_exc())
-                            with open("json_error_debug.log", "w") as debug_file:
-                                debug_file.write(f"JSON error: {e}\n")
-                                for listing in self.currentListings.values():
-                                    debug_file.write(f"{listing}\n")
-                                print("Error details written to json_error_debug.log.")
-                except Exception as e:
-                    print(f"Error writing JSON file '{self.jsonFileName}': {e}")
-                    print(traceback.format_exc())
+        except Exception as e:
+            msg = f'Error with search: {e}'
+            print(msg)
+            print(traceback.format_exc())
+        finally:
+            print("Entering the 'finally' block.")
+            print(f"self.currentListings has {len(self.currentListings)} items.")
+            try:
+                print(f"Opening file {self.jsonFileName} for writing...")
+                with open(self.jsonFileName, 'w') as file:
+                    print("File opened successfully.")
+                    print("Attempting to write JSON file...")
+                    
+                    try:
+                        json.dump(self.currentListings, file, default=self.listing_to_dict, indent=4)
+                        print("JSON file written successfully.")
+                    except Exception as e:
+                        print(f"JSON error: {e}")
+                        print(traceback.format_exc())
+                        with open("json_error_debug.log", "w") as debug_file:
+                            debug_file.write(f"JSON error: {e}\n")
+                            for listing in self.currentListings.values():
+                                debug_file.write(f"{listing}\n")
+                            print("Error details written to json_error_debug.log.")
+            except Exception as e:
+                print(f"Error writing JSON file '{self.jsonFileName}': {e}")
+                print(traceback.format_exc())
 
     def search_site(self, baseUrl, zip, getListings, session, listing_type):
         page = 1
@@ -117,11 +116,12 @@ class Hunter():
                 if l.mls in self.currentListings.keys():
                     current = self.currentListings[l.mls]
                     if l.price != current.price:
-                        self.send_to_neo4j(l, 'price_change', f'Price change from {current.price} to {l.price}', listing_type)
+                        self.check_price_change_percentage(current, l)
+                        self.db_ops.send_to_neo4j(l, 'price_change', f'Price change from {current.price} to {l.price}', 'URE')
                         self.currentListings[l.mls] = l
                         print(f'Price change for: {l.mls}')
                 else:
-                    self.send_to_neo4j(l, 'new_listing', None, listing_type)
+                    self.db_ops.send_to_neo4j(l, 'new_listing', None, listing_type)
                     self.currentListings[l.mls] = l
             page += 1
 
@@ -157,6 +157,15 @@ class Hunter():
 
         # Update city tags
         update_city_tags('unique_utah_agents.csv', 'unique_utah_agents_updated.csv')
+
+    def check_price_change_percentage(self, old_listing, new_listing):
+        old_price = old_listing.price
+        new_price = new_listing.price
+        change_percentage = ((new_price - old_price) / old_price) * 100
+        new_listing.price_change_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_listing.price_change_percentage = change_percentage
+        print(f"Price change: {old_price} -> {new_price} ({change_percentage:.2f}%) on {new_listing.price_change_date}")
+        # You can add more logic here based on the percentage change if needed
 
     def get_saved_listings(self):
         if not os.path.exists(self.jsonFileName):
@@ -336,92 +345,13 @@ class Hunter():
                     print(f"Error calculating time on market: {e}")
                     timeOnMarket = '???'
                 try:
-                    self.send_to_neo4j(listing, 'off_market', f'Listing Off Market in {timeOnMarket} days!!!', 'URE')
+                    self.db_ops.send_to_neo4j(listing, 'off_market', f'Listing Off Market in {timeOnMarket} days!!!', 'URE')
                     print(f"Listing {mls} marked as off the market in Neo4j.")
                 except Exception as e:
                     print(f"Error sending off-market listing to Neo4j: {e}")
                 del self.currentListings[mls]
                 print(f"Listing {mls} removed from current listings.")
         print('Completed checking for off the markets.')
-
-    def send_to_neo4j(self, listing, status, additionalText, listing_type):
-        try:
-            with self.driver.session() as session:
-                query = f"""
-                MERGE (l:{listing_type} {{mls: $mls}})
-                SET l.price = $price,
-                    l.priceStr = $priceStr,
-                    l.photoUrl = $photoUrl,
-                    l.address = $address,
-                    l.city = $city,
-                    l.state = $state,
-                    l.zip = $zip,
-                    l.sqft = $sqft,
-                    l.ppsqft = $ppsqft,
-                    l.acres = $acres,
-                    l.foundDate = $foundDate,
-                    l.stats = $stats,
-                    l.url = $url,
-                    l.status = $status,
-                    l.additionalText = $additionalText,
-                    l.agentName = $agent_name,
-                    l.agentPhone = $agent_phone,
-                    l.coAgentName = $co_agent_name,
-                    l.coAgentPhone = $co_agent_phone,
-                    l.brokerName = $broker_name,
-                    l.brokerPhone = $broker_phone,
-                    l.expirationDate = $expiration_date,
-                    l.pageViews = $page_views,
-                    l.favorited = $favorited,
-                    l.daysOnline = $days_online,
-                    l.daysLeft = $days_left,
-                    l.description = $description,
-                    l.propertyDetails = $property_details
-                """
-                session.run(query, mls=listing.mls, price=listing.price, priceStr=listing.priceStr, photoUrl=listing.photoUrl,
-                            address=listing.address, city=listing.city, state=listing.state, zip=listing.zip, sqft=listing.sqft,
-                            ppsqft=listing.ppsqft, acres=listing.acres, foundDate=listing.foundDate, stats=listing.stats,
-                            url=listing.url, status=status, additionalText=additionalText,
-                            agent_name=listing.agent_name, agent_phone=listing.agent_phone, 
-                            co_agent_name=listing.co_agent_name, co_agent_phone=listing.co_agent_phone,
-                            broker_name=listing.broker_name, broker_phone=listing.broker_phone,
-                            expiration_date=listing.expiration_date, page_views=listing.page_views,
-                            favorited=listing.favorited, days_online=listing.days_online, days_left=listing.days_left,
-                            description=listing.description, property_details=json.dumps(listing.property_details))
-
-                # Create or update the agent node
-                agent_query = """
-                MERGE (a:Agent {name: $agent_name, phone: $agent_phone})
-                """
-                session.run(agent_query, agent_name=listing.agent_name, agent_phone=listing.agent_phone)
-
-                # Create or update the broker node
-                broker_query = """
-                MERGE (b:Broker {name: $broker_name, phone: $broker_phone})
-                """
-                session.run(broker_query, broker_name=listing.broker_name, broker_phone=listing.broker_phone)
-
-                # Create the relationships between the listing and the agent, and between the listing and the broker
-                agent_listing_relationship_query = f"""
-                MATCH (a:Agent {{name: $agent_name, phone: $agent_phone}}), (l:{listing_type} {{mls: $mls}})
-                MERGE (a)-[:AGENT_OF]->(l)
-                """
-                session.run(agent_listing_relationship_query, agent_name=listing.agent_name, agent_phone=listing.agent_phone, mls=listing.mls)
-
-                broker_listing_relationship_query = f"""
-                MATCH (b:Broker {{name: $broker_name, phone: $broker_phone}}), (l:{listing_type} {{mls: $mls}})
-                MERGE (b)-[:BROKERED_BY]->(l)
-                """
-                session.run(broker_listing_relationship_query, broker_name=listing.broker_name, broker_phone=listing.broker_phone, mls=listing.mls)
-
-                # Create the relationship between the agent and the broker
-                agent_broker_relationship_query = """
-                MATCH (a:Agent {name: $agent_name, phone: $agent_phone}), (b:Broker {name: $broker_name, phone: $broker_phone})
-                MERGE (a)-[:WORKS_FOR]->(b)
-                """
-                session.run(agent_broker_relationship_query, agent_name=listing.agent_name, agent_phone=listing.agent_phone, broker_name=listing.broker_name, broker_phone=listing.broker_phone)
-        except Exception as e:
-            print(f"Error sending data to Neo4j: {e}")
 
     def get_traceback(self):
         try:

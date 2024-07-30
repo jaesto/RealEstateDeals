@@ -32,7 +32,10 @@ class Listing:
         self.days_left = 0
         self.description = ''
         self.property_details = {}
-        self.email = '' 
+        self.email = ''
+        self.price_change_date = ''  # New attribute to track price change date
+        self.price_change_percentage = 0.0  # New attribute to track price change percentage
+
 
     def __repr__(self):
         return (f"Listing(mls={self.mls}, price={self.price}, address={self.address}, city={self.city}, "
