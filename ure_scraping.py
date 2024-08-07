@@ -47,7 +47,7 @@ def search_site(baseUrl, zip_code, maxPrice, minSqFt, minLotSize, getListings, h
     finally:
         session.close()
 
-    print(f"Completed search for ZIP code {zip_code}. Listings sent to Neo4j: {listings_sent_to_neo4j}")
+    # print(f"Completed search for ZIP code {zip_code}. Listings sent to Neo4j: {listings_sent_to_neo4j}")
     # print("Completed search.")
 
 def get_utah_real_estate_listings_from_html(htmlText):
