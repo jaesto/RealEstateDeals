@@ -24,6 +24,7 @@ def search_site(baseUrl, zip_code, maxPrice, minSqFt, minLotSize, getListings, h
         while True:
             # print(f"Fetching page {page}")
             url = baseUrl.format(zip_code, maxPrice, minSqFt, minLotSize, page)
+            # print(url)
             try:
                 response = session.get(url, headers=headers)
                 response.raise_for_status()
@@ -31,7 +32,7 @@ def search_site(baseUrl, zip_code, maxPrice, minSqFt, minLotSize, getListings, h
                 print(f"Error fetching URL {url}: {e}")
                 break
 
-            listings = getListings(response.text)
+            listings = getListings(response.text, headers)
             if not listings:
                 # print("No more listings found. Ending search.")
                 break
@@ -47,10 +48,10 @@ def search_site(baseUrl, zip_code, maxPrice, minSqFt, minLotSize, getListings, h
     finally:
         session.close()
 
-    print(f"Completed search for ZIP code {zip_code}. Listings sent to Neo4j: {listings_sent_to_neo4j}")
+    # print(f"Completed search for ZIP code {zip_code}. Listings sent to Neo4j: {listings_sent_to_neo4j}")
     # print("Completed search.")
 
-def get_utah_real_estate_listings_from_html(htmlText):
+def get_utah_real_estate_listings_from_html(htmlText, headers):
     """
     Extracts listings from HTML text.
 
@@ -83,6 +84,33 @@ def get_utah_real_estate_listings_from_html(htmlText):
         except (AttributeError, IndexError) as e:
             print(f"Error extracting photo URL: {e}")
             listing.photoUrl = ''
+
+        # # Extract new fields
+        # try:
+        #     facts_items = soup.find_all('div', class_='facts___item')
+
+        #     # Extracting days on URE
+        #     days_on_ure = next((item.find('div').text.strip() for item in facts_items if item.find('span', class_='facts-header').text.strip() == 'Days on URE'), None)
+        #     listing.days_on_ure = int(days_on_ure) if days_on_ure else None
+        # except (AttributeError, ValueError, StopIteration) as e:
+        #     print(f"Error extracting days on URE: {e}")
+        #     listing.days_on_ure = None
+
+        # try:
+        #     # Extracting type
+        #     type_ = next((item.find('div').text.strip() for item in facts_items if item.find('span', class_='facts-header').text.strip() == 'Type'), None)
+        #     listing.type = type_ if type_ else ''
+        # except (AttributeError, StopIteration) as e:
+        #     print(f"Error extracting type: {e}")
+        #     listing.type = ''
+
+        # try:
+        #     # Extracting style
+        #     style = next((item.find('div').text.strip() for item in facts_items if item.find('span', class_='facts-header').text.strip() == 'Style'), None)
+        #     listing.style = style if style else ''
+        # except (AttributeError, StopIteration) as e:
+        #     print(f"Error extracting style: {e}")
+        #     listing.style = ''
 
         try:
             agent_info = listTable.find('b', string='Agent:')
@@ -181,6 +209,48 @@ def get_utah_real_estate_listings_from_html(htmlText):
             listing.stats = ''
 
         listing.url = r'http://www.utahrealestate.com/report/public.single.report/report/detailed/listno/{0}/scroll_to/{0}'.format(listing.mls)
+
+        # Now, let's make the additional request to get the detailed info
+        detailed_url = listing.url
+        try:
+            detailed_response = requests.get(detailed_url, headers=headers)
+            detailed_response.raise_for_status()
+            detailed_soup = BeautifulSoup(detailed_response.text, 'html.parser')
+
+            # Extract new fields
+            try:
+                facts_items = detailed_soup.find_all('div', class_='facts___item')
+                # print(facts_items)
+
+                # Extracting days on URE
+                days_on_ure = next((item.find_all('div')[1].text.strip() for item in facts_items if item.find('span', class_='facts-header').text.strip() == 'Days on URE'), None)
+                if days_on_ure:
+                    # Extract the number only, ignoring other text
+                    listing.days_on_ure = days_on_ure.split()[-1]
+                else:
+                    listing.days_on_ure = None
+            except (AttributeError, ValueError, StopIteration) as e:
+                print(f"Error extracting days on URE: {e}")
+                listing.days_on_ure = None
+
+            try:
+                # Extracting type
+                type_ = next((item.find_all('div')[1].text.strip() for item in facts_items if item.find('span', class_='facts-header').text.strip() == 'Type'), None)
+                listing.type = type_.replace("Type", "").strip() if type_ else ''
+            except (AttributeError, StopIteration) as e:
+                print(f"Error extracting type: {e}")
+                listing.type = ''
+
+            try:
+                # Extracting style
+                style = next((item.find_all('div')[1].text.strip() for item in facts_items if item.find('span', class_='facts-header').text.strip() == 'Style'), None)
+                listing.style = style.replace("Style", "").strip() if style else ''
+            except (AttributeError, StopIteration) as e:
+                print(f"Error extracting style: {e}")
+                listing.style = ''
+                
+        except requests.RequestException as e:
+            print(f"Error fetching detailed listing info: {e}")
 
         listings.append(listing)
 

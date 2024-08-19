@@ -7,8 +7,9 @@ from agent_manager import AgentManager
 from listing import Listing
 from utils import get_traceback
 # from hunter import Hunter
-from config import load_config
+from config import load_config, load_bama_zip_codes
 from data_loader import load_zip_codes
+from trulia_scraper import scrape_trulia
 
 def process_listing(listing, currentListings, db_ops):
     """
@@ -97,6 +98,10 @@ def main():
     ureURL=config['utahrealestateUrl']
     sleep_time=config['sleepTime']
     total_listings_sent_to_neo4j = [0] 
+
+    # Load Alabama ZIP codes, optionally filtering by counties
+    counties_to_search = ['Madison', 'Huntsville']  # Specify the counties you want
+    alabama_zip_codes = load_bama_zip_codes(counties=counties_to_search)
     
 
     try:
@@ -117,6 +122,11 @@ def main():
                         process_listing_callback=lambda listing: process_listing(listing, currentListings, db_ops),
                         total_counter=total_listings_sent_to_neo4j 
                     )
+
+                # Scrape listings from Trulia for each ZIP code
+                for zip_code in alabama_zip_codes:
+                    scrape_trulia(zip_code, db_ops, 350000)
+
                 agent_manager.update_agents(currentListings)
             except Exception as e:
                 print(f"Error during search cycle: {e}")

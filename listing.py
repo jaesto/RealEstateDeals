@@ -35,6 +35,9 @@ class Listing:
         self.email = ''
         self.price_change_date = ''  # New attribute to track price change date
         self.price_change_percentage = 0.0  # New attribute to track price change percentage
+        self.type = '' # New field for property type
+        self.style = '' # New field for property style
+        self.days_on_ure = ''  # New field for days on URE
 
 
     def __repr__(self):
